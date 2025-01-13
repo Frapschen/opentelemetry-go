@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package metric
 
@@ -19,7 +8,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/sdk/metric/internal"
+	"go.opentelemetry.io/otel/sdk/metric/internal/aggregate"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func BenchmarkInstrument(b *testing.B) {
@@ -32,11 +22,26 @@ func BenchmarkInstrument(b *testing.B) {
 	}
 
 	b.Run("instrumentImpl/aggregate", func(b *testing.B) {
-		inst := int64Inst{aggregators: []internal.Aggregator[int64]{
-			internal.NewLastValue[int64](),
-			internal.NewCumulativeSum[int64](true),
-			internal.NewDeltaSum[int64](true),
-		}}
+		build := aggregate.Builder[int64]{}
+		var meas []aggregate.Measure[int64]
+
+		build.Temporality = metricdata.CumulativeTemporality
+		in, _ := build.LastValue()
+		meas = append(meas, in)
+
+		build.Temporality = metricdata.DeltaTemporality
+		in, _ = build.LastValue()
+		meas = append(meas, in)
+
+		build.Temporality = metricdata.CumulativeTemporality
+		in, _ = build.Sum(true)
+		meas = append(meas, in)
+
+		build.Temporality = metricdata.DeltaTemporality
+		in, _ = build.Sum(true)
+		meas = append(meas, in)
+
+		inst := int64Inst{measures: meas}
 		ctx := context.Background()
 
 		b.ReportAllocs()
@@ -47,11 +52,21 @@ func BenchmarkInstrument(b *testing.B) {
 	})
 
 	b.Run("observable/observe", func(b *testing.B) {
-		o := observable[int64]{aggregators: []internal.Aggregator[int64]{
-			internal.NewLastValue[int64](),
-			internal.NewCumulativeSum[int64](true),
-			internal.NewDeltaSum[int64](true),
-		}}
+		build := aggregate.Builder[int64]{}
+		var meas []aggregate.Measure[int64]
+
+		in, _ := build.PrecomputedLastValue()
+		meas = append(meas, in)
+
+		build.Temporality = metricdata.CumulativeTemporality
+		in, _ = build.Sum(true)
+		meas = append(meas, in)
+
+		build.Temporality = metricdata.DeltaTemporality
+		in, _ = build.Sum(true)
+		meas = append(meas, in)
+
+		o := observable[int64]{measures: meas}
 
 		b.ReportAllocs()
 		b.ResetTimer()

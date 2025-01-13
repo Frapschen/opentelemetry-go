@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlpmetricgrpc
 
@@ -24,24 +13,27 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	ominternal "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/internal"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/internal/otest"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal/oconf"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal/otest"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func TestThrottleDuration(t *testing.T) {
+func TestThrottleDelay(t *testing.T) {
 	c := codes.ResourceExhausted
 	testcases := []struct {
-		status   *status.Status
-		expected time.Duration
+		status       *status.Status
+		wantOK       bool
+		wantDuration time.Duration
 	}{
 		{
-			status:   status.New(c, "NoRetryInfo"),
-			expected: 0,
+			status:       status.New(c, "NoRetryInfo"),
+			wantOK:       false,
+			wantDuration: 0,
 		},
 		{
 			status: func() *status.Status {
@@ -53,7 +45,8 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 15 * time.Millisecond,
+			wantOK:       true,
+			wantDuration: 15 * time.Millisecond,
 		},
 		{
 			status: func() *status.Status {
@@ -63,7 +56,8 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 0,
+			wantOK:       false,
+			wantDuration: 0,
 		},
 		{
 			status: func() *status.Status {
@@ -76,7 +70,8 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 13 * time.Minute,
+			wantOK:       true,
+			wantDuration: 13 * time.Minute,
 		},
 		{
 			status: func() *status.Status {
@@ -91,13 +86,16 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 13 * time.Minute,
+			wantOK:       true,
+			wantDuration: 13 * time.Minute,
 		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.status.Message(), func(t *testing.T) {
-			require.Equal(t, tc.expected, throttleDelay(tc.status))
+			ok, d := throttleDelay(tc.status)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantDuration, d)
 		})
 	}
 }
@@ -112,7 +110,7 @@ func TestRetryable(t *testing.T) {
 		codes.NotFound:           false,
 		codes.AlreadyExists:      false,
 		codes.PermissionDenied:   false,
-		codes.ResourceExhausted:  true,
+		codes.ResourceExhausted:  false,
 		codes.FailedPrecondition: false,
 		codes.Aborted:            true,
 		codes.OutOfRange:         true,
@@ -129,16 +127,48 @@ func TestRetryable(t *testing.T) {
 	}
 }
 
+func TestRetryableGRPCStatusResourceExhaustedWithRetryInfo(t *testing.T) {
+	delay := 15 * time.Millisecond
+	s, err := status.New(codes.ResourceExhausted, "WithRetryInfo").WithDetails(
+		&errdetails.RetryInfo{
+			RetryDelay: durationpb.New(delay),
+		},
+	)
+	require.NoError(t, err)
+
+	ok, d := retryableGRPCStatus(s)
+	assert.True(t, ok)
+	assert.Equal(t, delay, d)
+}
+
+type clientShim struct {
+	*client
+}
+
+func (clientShim) Temporality(metric.InstrumentKind) metricdata.Temporality {
+	return metricdata.CumulativeTemporality
+}
+
+func (clientShim) Aggregation(metric.InstrumentKind) metric.Aggregation {
+	return nil
+}
+
+func (clientShim) ForceFlush(ctx context.Context) error {
+	return ctx.Err()
+}
+
 func TestClient(t *testing.T) {
-	factory := func(rCh <-chan otest.ExportResult) (ominternal.Client, otest.Collector) {
+	factory := func(rCh <-chan otest.ExportResult) (otest.Client, otest.Collector) {
 		coll, err := otest.NewGRPCCollector("", rCh)
 		require.NoError(t, err)
 
 		ctx := context.Background()
 		addr := coll.Addr().String()
-		client, err := newClient(ctx, WithEndpoint(addr), WithInsecure())
+		opts := []Option{WithEndpoint(addr), WithInsecure()}
+		cfg := oconf.NewGRPCConfig(asGRPCOptions(opts)...)
+		client, err := newClient(ctx, cfg)
 		require.NoError(t, err)
-		return client, coll
+		return clientShim{client}, coll
 	}
 
 	t.Run("Integration", otest.RunClientTests(factory))
@@ -159,20 +189,38 @@ func TestConfig(t *testing.T) {
 		return exp, coll
 	}
 
+	t.Run("WithEndpointURL", func(t *testing.T) {
+		coll, err := otest.NewGRPCCollector("", nil)
+		require.NoError(t, err)
+		t.Cleanup(coll.Shutdown)
+
+		ctx := context.Background()
+		exp, err := New(ctx, WithEndpointURL("http://"+coll.Addr().String()))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+
+		assert.NoError(t, exp.Export(ctx, &metricdata.ResourceMetrics{}))
+		assert.Len(t, coll.Collect().Dump(), 1)
+	})
+
 	t.Run("WithHeaders", func(t *testing.T) {
 		key := "my-custom-header"
 		headers := map[string]string{key: "custom-value"}
 		exp, coll := factoryFunc(nil, WithHeaders(headers))
 		t.Cleanup(coll.Shutdown)
+
 		ctx := context.Background()
+		additionalKey := "additional-custom-header"
+		ctx = metadata.AppendToOutgoingContext(ctx, additionalKey, "additional-value")
 		require.NoError(t, exp.Export(ctx, &metricdata.ResourceMetrics{}))
 		// Ensure everything is flushed.
 		require.NoError(t, exp.Shutdown(ctx))
 
 		got := coll.Headers()
-		require.Regexp(t, "OTel OTLP Exporter Go/1\\..*", got)
+		require.Regexp(t, "OTel Go OTLP over gRPC metrics exporter/[01]\\..*", got)
 		require.Contains(t, got, key)
-		assert.Equal(t, got[key], []string{headers[key]})
+		require.Contains(t, got, additionalKey)
+		assert.Equal(t, []string{headers[key]}, got[key])
 	})
 
 	t.Run("WithTimeout", func(t *testing.T) {

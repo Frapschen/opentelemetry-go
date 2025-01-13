@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package global
 
@@ -22,10 +11,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"go.opentelemetry.io/auto/sdk"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type fnTracerProvider struct {
+	embedded.TracerProvider
+
 	tracer func(string, ...trace.TracerOption) trace.Tracer
 }
 
@@ -34,6 +29,8 @@ func (fn fnTracerProvider) Tracer(instrumentationName string, opts ...trace.Trac
 }
 
 type fnTracer struct {
+	embedded.Tracer
+
 	start func(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span)
 }
 
@@ -72,7 +69,7 @@ func TestTraceProviderDelegation(t *testing.T) {
 							assert.Equal(t, want, spanName)
 						}
 					}
-					return trace.NewNoopTracerProvider().Tracer(name).Start(ctx, spanName)
+					return noop.NewTracerProvider().Tracer(name).Start(ctx, spanName)
 				},
 			}
 		},
@@ -107,7 +104,7 @@ func TestTraceProviderDelegates(t *testing.T) {
 		tracer: func(name string, opts ...trace.TracerOption) trace.Tracer {
 			called = true
 			assert.Equal(t, "abc", name)
-			return trace.NewNoopTracerProvider().Tracer("")
+			return noop.NewTracerProvider().Tracer("")
 		},
 	})
 
@@ -148,7 +145,7 @@ func TestTraceProviderDelegatesConcurrentSafe(t *testing.T) {
 				// Signal the goroutine to finish.
 				close(quit)
 			}
-			return trace.NewNoopTracerProvider().Tracer("")
+			return noop.NewTracerProvider().Tracer("")
 		},
 	})
 
@@ -195,7 +192,7 @@ func TestTracerDelegatesConcurrentSafe(t *testing.T) {
 						// Signal the goroutine to finish.
 						close(quit)
 					}
-					return trace.NewNoopTracerProvider().Tracer("").Start(ctx, spanName)
+					return noop.NewTracerProvider().Tracer("").Start(ctx, spanName)
 				},
 			}
 		},
@@ -218,11 +215,11 @@ func TestTraceProviderDelegatesSameInstance(t *testing.T) {
 
 	SetTracerProvider(fnTracerProvider{
 		tracer: func(name string, opts ...trace.TracerOption) trace.Tracer {
-			return trace.NewNoopTracerProvider().Tracer("")
+			return noop.NewTracerProvider().Tracer("")
 		},
 	})
 
-	assert.NotSame(t, tracer, gtp.Tracer("abc", trace.WithInstrumentationVersion("xyz")))
+	assert.NotEqual(t, tracer, gtp.Tracer("abc", trace.WithInstrumentationVersion("xyz")))
 }
 
 func TestSpanContextPropagatedWithNonRecordingSpan(t *testing.T) {
@@ -239,4 +236,58 @@ func TestSpanContextPropagatedWithNonRecordingSpan(t *testing.T) {
 
 	assert.Equal(t, sc, span.SpanContext())
 	assert.False(t, span.IsRecording())
+}
+
+func TestTracerIdentity(t *testing.T) {
+	type id struct{ name, ver, url, attr string }
+
+	ids := []id{
+		{"name-a", "version-a", "url-a", ""},
+		{"name-a", "version-a", "url-a", "attr"},
+		{"name-a", "version-a", "url-b", ""},
+		{"name-a", "version-b", "url-a", ""},
+		{"name-a", "version-b", "url-b", ""},
+		{"name-b", "version-a", "url-a", ""},
+		{"name-b", "version-a", "url-b", ""},
+		{"name-b", "version-b", "url-a", ""},
+		{"name-b", "version-b", "url-b", ""},
+	}
+
+	provider := &tracerProvider{}
+	newTracer := func(i id) trace.Tracer {
+		return provider.Tracer(
+			i.name,
+			trace.WithInstrumentationVersion(i.ver),
+			trace.WithSchemaURL(i.url),
+			trace.WithInstrumentationAttributes(attribute.String("key", i.attr)),
+		)
+	}
+
+	for i, id0 := range ids {
+		for j, id1 := range ids {
+			l0, l1 := newTracer(id0), newTracer(id1)
+
+			if i == j {
+				assert.Samef(t, l0, l1, "Tracer(%v) != Tracer(%v)", id0, id1)
+			} else {
+				assert.NotSamef(t, l0, l1, "Tracer(%v) == Tracer(%v)", id0, id1)
+			}
+		}
+	}
+}
+
+func TestNewSpanType(t *testing.T) {
+	tracer := new(tracer)
+	ctx := context.Background()
+	_, got := tracer.newSpan(ctx, autoInstEnabled, "", nil)
+	assert.IsType(t, nonRecordingSpan{}, got, "default span type")
+
+	orig := *autoInstEnabled
+	*autoInstEnabled = true
+	t.Cleanup(func() { *autoInstEnabled = orig })
+
+	_, got = tracer.newSpan(ctx, autoInstEnabled, "", nil)
+	autoTracer := sdk.TracerProvider().Tracer("")
+	_, span := autoTracer.Start(ctx, "")
+	assert.IsType(t, span, got, "auto span type")
 }

@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package opentracing // import "go.opentelemetry.io/otel/bridge/opentracing"
 
@@ -19,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/bridge/opentracing/migration"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
 )
 
 // WrapperTracerProvider is an OpenTelemetry TracerProvider that wraps an
@@ -26,6 +16,8 @@ import (
 //
 // Deprecated: Use the TracerProvider from NewTracerProvider(...) instead.
 type WrapperTracerProvider struct {
+	embedded.TracerProvider
+
 	wTracer *WrapperTracer
 }
 
@@ -56,12 +48,16 @@ func NewWrappedTracerProvider(bridge *BridgeTracer, tracer trace.Tracer) *Wrappe
 // aware how to operate in environment where OpenTracing API is also
 // used.
 type WrapperTracer struct {
+	embedded.Tracer
+
 	bridge *BridgeTracer
 	tracer trace.Tracer
 }
 
-var _ trace.Tracer = &WrapperTracer{}
-var _ migration.DeferredContextSetupTracerExtension = &WrapperTracer{}
+var (
+	_ trace.Tracer                                  = &WrapperTracer{}
+	_ migration.DeferredContextSetupTracerExtension = &WrapperTracer{}
+)
 
 // NewWrapperTracer wraps the passed tracer and also talks to the
 // passed bridge tracer when setting up the context with the new

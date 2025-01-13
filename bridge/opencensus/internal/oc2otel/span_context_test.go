@@ -1,21 +1,15 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package oc2otel
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"go.opencensus.io/plugin/ochttp/propagation/tracecontext"
+
+	"go.opentelemetry.io/otel/bridge/opencensus/internal/otel2oc"
 
 	octrace "go.opencensus.io/trace"
 	"go.opencensus.io/trace/tracestate"
@@ -24,10 +18,21 @@ import (
 )
 
 func TestSpanContextConversion(t *testing.T) {
+	tsOc, _ := tracestate.New(nil,
+		tracestate.Entry{Key: "key1", Value: "value1"},
+		tracestate.Entry{Key: "key2", Value: "value2"},
+	)
+	tsOtel := trace.TraceState{}
+	tsOtel, _ = tsOtel.Insert("key2", "value2")
+	tsOtel, _ = tsOtel.Insert("key1", "value1")
+
+	httpFormatOc := &tracecontext.HTTPFormat{}
+
 	for _, tc := range []struct {
-		description string
-		input       octrace.SpanContext
-		expected    trace.SpanContext
+		description        string
+		input              octrace.SpanContext
+		expected           trace.SpanContext
+		expectedTracestate string
 	}{
 		{
 			description: "empty",
@@ -58,23 +63,32 @@ func TestSpanContextConversion(t *testing.T) {
 			}),
 		},
 		{
-			description: "trace state is ignored",
+			description: "trace state should be propagated",
 			input: octrace.SpanContext{
 				TraceID:    octrace.TraceID([16]byte{1}),
 				SpanID:     octrace.SpanID([8]byte{2}),
-				Tracestate: &tracestate.Tracestate{},
+				Tracestate: tsOc,
 			},
 			expected: trace.NewSpanContext(trace.SpanContextConfig{
-				TraceID: trace.TraceID([16]byte{1}),
-				SpanID:  trace.SpanID([8]byte{2}),
+				TraceID:    trace.TraceID([16]byte{1}),
+				SpanID:     trace.SpanID([8]byte{2}),
+				TraceState: tsOtel,
 			}),
+			expectedTracestate: "key1=value1,key2=value2",
 		},
 	} {
 		t.Run(tc.description, func(t *testing.T) {
 			output := SpanContext(tc.input)
-			if !output.Equal(tc.expected) {
-				t.Fatalf("Got %+v spancontext, expected %+v.", output, tc.expected)
-			}
+			assert.Equal(t, tc.expected, output)
+
+			// Ensure the otel tracestate and oc tracestate has the same header output
+			_, ts := httpFormatOc.SpanContextToHeaders(tc.input)
+			assert.Equal(t, tc.expectedTracestate, ts)
+			assert.Equal(t, tc.expectedTracestate, tc.expected.TraceState().String())
+
+			// The reverse conversion should yield the original input
+			input := otel2oc.SpanContext(output)
+			assert.Equal(t, tc.input, input)
 		})
 	}
 }

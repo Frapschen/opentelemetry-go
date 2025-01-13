@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package internal // import "go.opentelemetry.io/otel/bridge/opentracing/internal"
 
@@ -24,8 +13,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/bridge/opentracing/migration"
 	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 //nolint:revive // ignoring missing comments for unexported global variables in an internal package.
@@ -44,6 +35,8 @@ type MockContextKeyValue struct {
 }
 
 type MockTracer struct {
+	embedded.Tracer
+
 	FinishedSpans         []*MockSpan
 	SpareTraceIDs         []trace.TraceID
 	SpareSpanIDs          []trace.SpanID
@@ -54,8 +47,10 @@ type MockTracer struct {
 	rand     *rand.Rand
 }
 
-var _ trace.Tracer = &MockTracer{}
-var _ migration.DeferredContextSetupTracerExtension = &MockTracer{}
+var (
+	_ trace.Tracer                                  = &MockTracer{}
+	_ migration.DeferredContextSetupTracerExtension = &MockTracer{}
+)
 
 func NewMockTracer() *MockTracer {
 	return &MockTracer{
@@ -181,7 +176,14 @@ type MockEvent struct {
 	Attributes []attribute.KeyValue
 }
 
+type MockLink struct {
+	SpanContext trace.SpanContext
+	Attributes  []attribute.KeyValue
+}
+
 type MockSpan struct {
+	embedded.Span
+
 	mockTracer     *MockTracer
 	officialTracer trace.Tracer
 	spanContext    trace.SpanContext
@@ -193,10 +195,13 @@ type MockSpan struct {
 	EndTime      time.Time
 	ParentSpanID trace.SpanID
 	Events       []MockEvent
+	Links        []MockLink
 }
 
-var _ trace.Span = &MockSpan{}
-var _ migration.OverrideTracerSpanExtension = &MockSpan{}
+var (
+	_ trace.Span                            = &MockSpan{}
+	_ migration.OverrideTracerSpanExtension = &MockSpan{}
+)
 
 func (s *MockSpan) SpanContext() trace.SpanContext {
 	return s.spanContext
@@ -287,8 +292,15 @@ func (s *MockSpan) AddEvent(name string, o ...trace.EventOption) {
 	})
 }
 
+func (s *MockSpan) AddLink(link trace.Link) {
+	s.Links = append(s.Links, MockLink{
+		SpanContext: link.SpanContext,
+		Attributes:  link.Attributes,
+	})
+}
+
 func (s *MockSpan) OverrideTracer(tracer trace.Tracer) {
 	s.officialTracer = tracer
 }
 
-func (s *MockSpan) TracerProvider() trace.TracerProvider { return trace.NewNoopTracerProvider() }
+func (s *MockSpan) TracerProvider() trace.TracerProvider { return noop.NewTracerProvider() }

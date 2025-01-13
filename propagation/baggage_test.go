@@ -1,23 +1,11 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package propagation_test
 
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -41,13 +29,13 @@ type member struct {
 func (m member) Member(t *testing.T) baggage.Member {
 	props := make([]baggage.Property, 0, len(m.Properties))
 	for _, p := range m.Properties {
-		p, err := baggage.NewKeyValueProperty(p.Key, p.Value)
+		p, err := baggage.NewKeyValuePropertyRaw(p.Key, p.Value)
 		if err != nil {
 			t.Fatal(err)
 		}
 		props = append(props, p)
 	}
-	bMember, err := baggage.NewMember(m.Key, url.QueryEscape(m.Value), props...)
+	bMember, err := baggage.NewMemberRaw(m.Key, m.Value, props...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +117,7 @@ func TestExtractValidBaggageFromHTTPReq(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", "http://example.com", nil)
+			req, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)
 			req.Header.Set("baggage", tt.header)
 
 			ctx := context.Background()
@@ -185,7 +173,7 @@ func TestExtractInvalidDistributedContextFromHTTPReq(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", "http://example.com", nil)
+			req, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)
 			req.Header.Set("baggage", tt.header)
 
 			expected := tt.has.Baggage(t)
@@ -214,9 +202,9 @@ func TestInjectBaggageToHTTPReq(t *testing.T) {
 		{
 			name: "values with escaped chars",
 			mems: members{
-				{Key: "key2", Value: "val3=4"},
+				{Key: "key2", Value: "val3,4"},
 			},
-			wantInHeader: []string{"key2=val3%3D4"},
+			wantInHeader: []string{"key2=val3%2C4"},
 		},
 		{
 			name: "with properties",
@@ -238,12 +226,61 @@ func TestInjectBaggageToHTTPReq(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", "http://example.com", nil)
+			req, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)
 			ctx := baggage.ContextWithBaggage(context.Background(), tt.mems.Baggage(t))
 			propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 			got := strings.Split(req.Header.Get("baggage"), ",")
 			assert.ElementsMatch(t, tt.wantInHeader, got)
+		})
+	}
+}
+
+func TestBaggageInjectExtractRoundtrip(t *testing.T) {
+	propagator := propagation.Baggage{}
+	tests := []struct {
+		name string
+		mems members
+	}{
+		{
+			name: "two simple values",
+			mems: members{
+				{Key: "key1", Value: "val1"},
+				{Key: "key2", Value: "val2"},
+			},
+		},
+		{
+			name: "values with escaped chars",
+			mems: members{
+				{Key: "key1", Value: "val3=4"},
+				{Key: "key2", Value: "mess,me%up"},
+			},
+		},
+		{
+			name: "with properties",
+			mems: members{
+				{Key: "key1", Value: "val1"},
+				{
+					Key:   "key2",
+					Value: "val2",
+					Properties: []property{
+						{Key: "prop", Value: "1"},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := tt.mems.Baggage(t)
+			req, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)
+			ctx := baggage.ContextWithBaggage(context.Background(), b)
+			propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+			ctx = propagator.Extract(context.Background(), propagation.HeaderCarrier(req.Header))
+			got := baggage.FromContext(ctx)
+
+			assert.Equal(t, b, got)
 		})
 	}
 }

@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package test
 
@@ -38,12 +27,15 @@ type testGRPCServer struct{}
 func (*testGRPCServer) UnaryCall(ctx context.Context, r *testpb.SimpleRequest) (*testpb.SimpleResponse, error) {
 	return &testpb.SimpleResponse{Payload: r.Payload * 2}, nil
 }
+
 func (*testGRPCServer) StreamingOutputCall(*testpb.SimpleRequest, testpb.TestService_StreamingOutputCallServer) error {
 	return nil
 }
+
 func (*testGRPCServer) StreamingInputCall(testpb.TestService_StreamingInputCallServer) error {
 	return nil
 }
+
 func (*testGRPCServer) StreamingBidirectionalCall(testpb.TestService_StreamingBidirectionalCallServer) error {
 	return nil
 }
@@ -73,7 +65,7 @@ func TestBridgeTracer_ExtractAndInject_gRPC(t *testing.T) {
 	srv, addr := startTestGRPCServer(t, bridge)
 	defer srv.Stop()
 
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		addr.String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(otgrpc.OpenTracingClientInterceptor(bridge)),

@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package oc2otel
 
@@ -45,6 +34,29 @@ func TestAttributes(t *testing.T) {
 		if g, w := got[i], want[i]; g != w {
 			t.Errorf("Attributes conversion: want %#v, got %#v", w, g)
 		}
+	}
+}
+
+func TestAttributesFromMap(t *testing.T) {
+	in := map[string]interface{}{
+		"bool":    true,
+		"int64":   int64(49),
+		"float64": float64(1.618),
+		"key":     "val",
+	}
+
+	want := []attribute.KeyValue{
+		attribute.Bool("bool", true),
+		attribute.Int64("int64", 49),
+		attribute.Float64("float64", 1.618),
+		attribute.String("key", "val"),
+	}
+	got := AttributesFromMap(in)
+
+	gotAttributeSet := attribute.NewSet(got...)
+	wantAttributeSet := attribute.NewSet(want...)
+	if !gotAttributeSet.Equals(&wantAttributeSet) {
+		t.Errorf("Attributes conversion want %v, got %v", wantAttributeSet.Encoded(attribute.DefaultEncoder()), gotAttributeSet.Encoded(attribute.DefaultEncoder()))
 	}
 }
 

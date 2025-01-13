@@ -1,16 +1,8 @@
+// Code created by gotmpl. DO NOT MODIFY.
+// source: internal/shared/internaltest/text_map_propagator.go.tmpl
+
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package internaltest // import "go.opentelemetry.io/otel/internal/internaltest"
 
@@ -35,9 +27,9 @@ func newState(encoded string) state {
 	if encoded == "" {
 		return state{}
 	}
-	split := strings.SplitN(encoded, ",", 2)
-	injects, _ := strconv.ParseUint(split[0], 10, 64)
-	extracts, _ := strconv.ParseUint(split[1], 10, 64)
+	s0, s1, _ := strings.Cut(encoded, ",")
+	injects, _ := strconv.ParseUint(s0, 10, 64)
+	extracts, _ := strconv.ParseUint(s1, 10, 64)
 	return state{
 		Injections:  injects,
 		Extractions: extracts,
@@ -83,8 +75,8 @@ func (p *TextMapPropagator) Inject(ctx context.Context, carrier propagation.Text
 }
 
 // InjectedN tests if p has made n injections to carrier.
-func (p *TextMapPropagator) InjectedN(t *testing.T, carrier *TextMapCarrier, n int) bool {
-	if actual := p.stateFromCarrier(carrier).Injections; actual != uint64(n) {
+func (p *TextMapPropagator) InjectedN(t *testing.T, carrier *TextMapCarrier, n uint64) bool {
+	if actual := p.stateFromCarrier(carrier).Injections; actual != n {
 		t.Errorf("TextMapPropagator{%q} injected %d times, not %d", p.name, actual, n)
 		return false
 	}

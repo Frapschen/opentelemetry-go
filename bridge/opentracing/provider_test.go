@@ -1,24 +1,15 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package opentracing
 
 import (
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/bridge/opentracing/internal"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
 )
 
 type namedMockTracer struct {
@@ -26,7 +17,7 @@ type namedMockTracer struct {
 	*internal.MockTracer
 }
 
-type namedMockTracerProvider struct{}
+type namedMockTracerProvider struct{ embedded.TracerProvider }
 
 var _ trace.TracerProvider = (*namedMockTracerProvider)(nil)
 
@@ -68,18 +59,37 @@ func TestTracerProvider(t *testing.T) {
 	})
 
 	t.Run("Repeated requests to create a tracer should provide the existing tracer", func(t *testing.T) {
-		tracer1 := provider.Tracer(foobar)
-		assertMockTracerName(t, tracer1, foobar)
-		tracer2 := provider.Tracer(foobar)
-		assertMockTracerName(t, tracer2, foobar)
-		tracer3 := provider.Tracer(bazbar)
-		assertMockTracerName(t, tracer3, bazbar)
-
-		if tracer1 != tracer2 {
-			t.Errorf("expected the same tracer, got different tracers")
+		tracerFns := []func() trace.Tracer{
+			func() trace.Tracer {
+				return provider.Tracer(foobar)
+			},
+			func() trace.Tracer {
+				return provider.Tracer(bazbar)
+			},
+			func() trace.Tracer {
+				return provider.Tracer(foobar, trace.WithSchemaURL("https://opentelemetry.io/schemas/1.2.0"))
+			},
+			func() trace.Tracer {
+				return provider.Tracer(foobar, trace.WithInstrumentationAttributes(attribute.String("foo", "bar")))
+			},
+			func() trace.Tracer {
+				return provider.Tracer(foobar, trace.WithSchemaURL("https://opentelemetry.io/schemas/1.2.0"), trace.WithInstrumentationAttributes(attribute.String("foo", "bar")))
+			},
 		}
-		if tracer1 == tracer3 || tracer2 == tracer3 {
-			t.Errorf("expected different tracers, got the same tracer")
+
+		for i, fn1 := range tracerFns {
+			for j, fn2 := range tracerFns {
+				tracer1, tracer2 := fn1(), fn2()
+				if i == j {
+					if tracer1 != tracer2 {
+						t.Errorf("expected the same tracer, got different tracers; i=%d j=%d", i, j)
+					}
+				} else {
+					if tracer1 == tracer2 {
+						t.Errorf("expected different tracers, got the same tracer; i=%d j=%d", i, j)
+					}
+				}
+			}
 		}
 	})
 }
