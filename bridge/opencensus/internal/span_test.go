@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package internal_test
 
@@ -39,6 +28,7 @@ type span struct {
 	attrs     []attribute.KeyValue
 	eName     string
 	eOpts     []trace.EventOption
+	links     []trace.Link
 }
 
 func (s *span) IsRecording() bool                         { return s.recording }
@@ -48,6 +38,7 @@ func (s *span) SetName(n string)                          { s.name = n }
 func (s *span) SetStatus(c codes.Code, d string)          { s.sCode, s.sMsg = c, d }
 func (s *span) SetAttributes(a ...attribute.KeyValue)     { s.attrs = a }
 func (s *span) AddEvent(n string, o ...trace.EventOption) { s.eName, s.eOpts = n, o }
+func (s *span) AddLink(l trace.Link)                      { s.links = append(s.links, l) }
 
 func TestSpanIsRecordingEvents(t *testing.T) {
 	s := &span{recording: true}
@@ -105,15 +96,40 @@ func TestSpanSetStatus(t *testing.T) {
 	s := &span{recording: true}
 	ocS := internal.NewSpan(s)
 
-	c, d := codes.Error, "error"
-	status := octrace.Status{Code: int32(c), Message: d}
-	ocS.SetStatus(status)
+	for _, tt := range []struct {
+		name string
 
-	if s.sCode != c {
-		t.Error("span.SetStatus failed to set OpenTelemetry status code")
-	}
-	if s.sMsg != d {
-		t.Error("span.SetStatus failed to set OpenTelemetry status description")
+		code    int32
+		message string
+
+		wantCode codes.Code
+	}{
+		{
+			name:    "with an error code",
+			code:    int32(codes.Error),
+			message: "error",
+
+			wantCode: codes.Error,
+		},
+		{
+			name:    "with a negative/invalid code",
+			code:    -42,
+			message: "error",
+
+			wantCode: codes.Unset,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			status := octrace.Status{Code: tt.code, Message: tt.message}
+			ocS.SetStatus(status)
+
+			if s.sCode != tt.wantCode {
+				t.Errorf("span.SetStatus failed to set OpenTelemetry status code. Expected %d, got %d", tt.wantCode, s.sCode)
+			}
+			if s.sMsg != tt.message {
+				t.Errorf("span.SetStatus failed to set OpenTelemetry status description. Expected %s, got %s", tt.message, s.sMsg)
+			}
+		})
 	}
 }
 
@@ -241,16 +257,51 @@ func TestSpanAddMessageReceiveEvent(t *testing.T) {
 }
 
 func TestSpanAddLinkFails(t *testing.T) {
-	h, restore := withHandler()
-	defer restore()
-
 	// OpenCensus does not try to set links if not recording.
 	s := &span{recording: true}
 	ocS := internal.NewSpan(s)
 	ocS.AddLink(octrace.Link{})
+	ocS.AddLink(octrace.Link{
+		TraceID: octrace.TraceID([16]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),
+		SpanID:  octrace.SpanID([8]byte{2, 0, 0, 0, 0, 0, 0, 0}),
+		Attributes: map[string]interface{}{
+			"foo":    "bar",
+			"number": int64(3),
+		},
+	})
 
-	if h.err == nil {
-		t.Error("span.AddLink failed to raise an error")
+	wantLinks := []trace.Link{
+		{
+			SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+				TraceFlags: trace.FlagsSampled,
+			}),
+		},
+		{
+			SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    trace.TraceID([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),
+				SpanID:     trace.SpanID([]byte{2, 0, 0, 0, 0, 0, 0, 0}),
+				TraceFlags: trace.FlagsSampled,
+			}),
+			Attributes: []attribute.KeyValue{
+				attribute.String("foo", "bar"),
+				attribute.Int64("number", 3),
+			},
+		},
+	}
+
+	if len(s.links) != len(wantLinks) {
+		t.Fatalf("got wrong number of links; want %v, got %v", len(wantLinks), len(s.links))
+	}
+
+	for i, l := range s.links {
+		if !l.SpanContext.Equal(wantLinks[i].SpanContext) {
+			t.Errorf("link[%v] has the wrong span context; want %+v, got %+v", i, wantLinks[i].SpanContext, l.SpanContext)
+		}
+		gotAttributeSet := attribute.NewSet(l.Attributes...)
+		wantAttributeSet := attribute.NewSet(wantLinks[i].Attributes...)
+		if !gotAttributeSet.Equals(&wantAttributeSet) {
+			t.Errorf("link[%v] has the wrong attributes; want %v, got %v", i, wantAttributeSet.Encoded(attribute.DefaultEncoder()), gotAttributeSet.Encoded(attribute.DefaultEncoder()))
+		}
 	}
 }
 

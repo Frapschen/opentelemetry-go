@@ -1,20 +1,10 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package stdoutmetric_test // import "go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -26,7 +16,6 @@ import (
 
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/aggregation"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
@@ -39,8 +28,7 @@ func testEncoderOption() stdoutmetric.Option {
 func testCtxErrHonored(factory func(*testing.T) func(context.Context) error) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
+		ctx := context.Background()
 
 		t.Run("DeadlineExceeded", func(t *testing.T) {
 			innerCtx, innerCancel := context.WithTimeout(ctx, time.Nanosecond)
@@ -66,19 +54,27 @@ func testCtxErrHonored(factory func(*testing.T) func(context.Context) error) fun
 	}
 }
 
-func TestExporterHonorsContextErrors(t *testing.T) {
-	t.Run("Shutdown", testCtxErrHonored(func(t *testing.T) func(context.Context) error {
-		exp, err := stdoutmetric.New(testEncoderOption())
-		require.NoError(t, err)
-		return exp.Shutdown
-	}))
+func testCtxErrIgnored(factory func(*testing.T) func(context.Context) error) func(t *testing.T) {
+	return func(t *testing.T) {
+		t.Helper()
+		ctx := context.Background()
 
-	t.Run("ForceFlush", testCtxErrHonored(func(t *testing.T) func(context.Context) error {
-		exp, err := stdoutmetric.New(testEncoderOption())
-		require.NoError(t, err)
-		return exp.ForceFlush
-	}))
+		t.Run("Canceled Ignored", func(t *testing.T) {
+			innerCtx, innerCancel := context.WithCancel(ctx)
+			innerCancel()
 
+			f := factory(t)
+			assert.NoError(t, f(innerCtx))
+		})
+
+		t.Run("NoError", func(t *testing.T) {
+			f := factory(t)
+			assert.NoError(t, f(ctx))
+		})
+	}
+}
+
+func TestExporterExportHonorsContextErrors(t *testing.T) {
 	t.Run("Export", testCtxErrHonored(func(t *testing.T) func(context.Context) error {
 		exp, err := stdoutmetric.New(testEncoderOption())
 		require.NoError(t, err)
@@ -86,6 +82,22 @@ func TestExporterHonorsContextErrors(t *testing.T) {
 			data := new(metricdata.ResourceMetrics)
 			return exp.Export(ctx, data)
 		}
+	}))
+}
+
+func TestExporterForceFlushIgnoresContextErrors(t *testing.T) {
+	t.Run("ForceFlush", testCtxErrIgnored(func(t *testing.T) func(context.Context) error {
+		exp, err := stdoutmetric.New(testEncoderOption())
+		require.NoError(t, err)
+		return exp.ForceFlush
+	}))
+}
+
+func TestExporterShutdownIgnoresContextErrors(t *testing.T) {
+	t.Run("Shutdown", testCtxErrIgnored(func(t *testing.T) func(context.Context) error {
+		exp, err := stdoutmetric.New(testEncoderOption())
+		require.NoError(t, err)
+		return exp.Shutdown
 	}))
 }
 
@@ -104,6 +116,43 @@ func deltaSelector(metric.InstrumentKind) metricdata.Temporality {
 	return metricdata.DeltaTemporality
 }
 
+func TestExportWithOptions(t *testing.T) {
+	var (
+		data = new(metricdata.ResourceMetrics)
+		ctx  = context.Background()
+	)
+
+	for _, tt := range []struct {
+		name string
+		opts []stdoutmetric.Option
+
+		expectedData string
+	}{
+		{
+			name:         "with no options",
+			expectedData: "{\"Resource\":null,\"ScopeMetrics\":null}\n",
+		},
+		{
+			name: "with pretty print",
+			opts: []stdoutmetric.Option{
+				stdoutmetric.WithPrettyPrint(),
+			},
+			expectedData: "{\n\t\"Resource\": null,\n\t\"ScopeMetrics\": null\n}\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var b bytes.Buffer
+			opts := append(tt.opts, stdoutmetric.WithWriter(&b))
+
+			exp, err := stdoutmetric.New(opts...)
+			require.NoError(t, err)
+			require.NoError(t, exp.Export(ctx, data))
+
+			assert.Equal(t, tt.expectedData, b.String())
+		})
+	}
+}
+
 func TestTemporalitySelector(t *testing.T) {
 	exp, err := stdoutmetric.New(
 		testEncoderOption(),
@@ -115,8 +164,8 @@ func TestTemporalitySelector(t *testing.T) {
 	assert.Equal(t, metricdata.DeltaTemporality, exp.Temporality(unknownKind))
 }
 
-func dropSelector(metric.InstrumentKind) aggregation.Aggregation {
-	return aggregation.Drop{}
+func dropSelector(metric.InstrumentKind) metric.Aggregation {
+	return metric.AggregationDrop{}
 }
 
 func TestAggregationSelector(t *testing.T) {
@@ -127,5 +176,5 @@ func TestAggregationSelector(t *testing.T) {
 	require.NoError(t, err)
 
 	var unknownKind metric.InstrumentKind
-	assert.Equal(t, aggregation.Drop{}, exp.Aggregation(unknownKind))
+	assert.Equal(t, metric.AggregationDrop{}, exp.Aggregation(unknownKind))
 }

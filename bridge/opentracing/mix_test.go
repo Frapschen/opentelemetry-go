@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package opentracing
 
@@ -334,7 +323,7 @@ func newBaggageItemsPreservationTest() *baggageItemsPreservationTest {
 				value: "two",
 			},
 			{
-				key:   "Third",
+				key:   "third",
 				value: "three",
 			},
 		},
@@ -427,7 +416,7 @@ func newBaggageInteroperationTest() *baggageInteroperationTest {
 				value: "two",
 			},
 			{
-				key:   "Third",
+				key:   "third",
 				value: "three",
 			},
 		},
@@ -515,7 +504,7 @@ func (bio *baggageInteroperationTest) addAndRecordBaggage(t *testing.T, ctx cont
 
 	otSpan.SetBaggageItem(otKey, value)
 
-	m, err := baggage.NewMember(otelKey, value)
+	m, err := baggage.NewMemberRaw(otelKey, value)
 	if err != nil {
 		t.Error(err)
 		return ctx
@@ -609,13 +598,6 @@ func simpleSpanIDs(count int) []trace.SpanID {
 		{128},
 	}
 	return base[:count]
-}
-
-func min(a, b int) int {
-	if a > b {
-		return b
-	}
-	return a
 }
 
 func runOtelOTOtel(t *testing.T, ctx context.Context, name string, callback func(*testing.T, context.Context) context.Context) {

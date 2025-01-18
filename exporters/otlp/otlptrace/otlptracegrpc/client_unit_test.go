@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlptracegrpc
 
@@ -27,19 +16,21 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-func TestThrottleDuration(t *testing.T) {
+func TestThrottleDelay(t *testing.T) {
 	c := codes.ResourceExhausted
 	testcases := []struct {
-		status   *status.Status
-		expected time.Duration
+		status       *status.Status
+		wantOK       bool
+		wantDuration time.Duration
 	}{
 		{
-			status:   status.New(c, "no retry info"),
-			expected: 0,
+			status:       status.New(c, "NoRetryInfo"),
+			wantOK:       false,
+			wantDuration: 0,
 		},
 		{
 			status: func() *status.Status {
-				s, err := status.New(c, "single retry info").WithDetails(
+				s, err := status.New(c, "SingleRetryInfo").WithDetails(
 					&errdetails.RetryInfo{
 						RetryDelay: durationpb.New(15 * time.Millisecond),
 					},
@@ -47,21 +38,23 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 15 * time.Millisecond,
+			wantOK:       true,
+			wantDuration: 15 * time.Millisecond,
 		},
 		{
 			status: func() *status.Status {
-				s, err := status.New(c, "error info").WithDetails(
+				s, err := status.New(c, "ErrorInfo").WithDetails(
 					&errdetails.ErrorInfo{Reason: "no throttle detail"},
 				)
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 0,
+			wantOK:       false,
+			wantDuration: 0,
 		},
 		{
 			status: func() *status.Status {
-				s, err := status.New(c, "error and retry info").WithDetails(
+				s, err := status.New(c, "ErrorAndRetryInfo").WithDetails(
 					&errdetails.ErrorInfo{Reason: "with throttle detail"},
 					&errdetails.RetryInfo{
 						RetryDelay: durationpb.New(13 * time.Minute),
@@ -70,11 +63,12 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 13 * time.Minute,
+			wantOK:       true,
+			wantDuration: 13 * time.Minute,
 		},
 		{
 			status: func() *status.Status {
-				s, err := status.New(c, "double retry info").WithDetails(
+				s, err := status.New(c, "DoubleRetryInfo").WithDetails(
 					&errdetails.RetryInfo{
 						RetryDelay: durationpb.New(13 * time.Minute),
 					},
@@ -85,13 +79,16 @@ func TestThrottleDuration(t *testing.T) {
 				require.NoError(t, err)
 				return s
 			}(),
-			expected: 13 * time.Minute,
+			wantOK:       true,
+			wantDuration: 13 * time.Minute,
 		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.status.Message(), func(t *testing.T) {
-			require.Equal(t, tc.expected, throttleDelay(tc.status))
+			ok, d := throttleDelay(tc.status)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantDuration, d)
 		})
 	}
 }
@@ -106,7 +103,7 @@ func TestRetryable(t *testing.T) {
 		codes.NotFound:           false,
 		codes.AlreadyExists:      false,
 		codes.PermissionDenied:   false,
-		codes.ResourceExhausted:  true,
+		codes.ResourceExhausted:  false,
 		codes.FailedPrecondition: false,
 		codes.Aborted:            true,
 		codes.OutOfRange:         true,
@@ -121,6 +118,20 @@ func TestRetryable(t *testing.T) {
 		got, _ := retryable(status.Error(c, ""))
 		assert.Equalf(t, want, got, "evaluate(%s)", c)
 	}
+}
+
+func TestRetryableGRPCStatusResourceExhaustedWithRetryInfo(t *testing.T) {
+	delay := 15 * time.Millisecond
+	s, err := status.New(codes.ResourceExhausted, "WithRetryInfo").WithDetails(
+		&errdetails.RetryInfo{
+			RetryDelay: durationpb.New(delay),
+		},
+	)
+	require.NoError(t, err)
+
+	ok, d := retryableGRPCStatus(s)
+	assert.True(t, ok)
+	assert.Equal(t, delay, d)
 }
 
 func TestUnstartedStop(t *testing.T) {
@@ -190,4 +201,88 @@ func TestExportContextLinksStopSignal(t *testing.T) {
 		}
 		return false
 	}, 10*time.Second, time.Microsecond)
+}
+
+func TestWithEndpointWithEnv(t *testing.T) {
+	testCases := []struct {
+		name    string
+		options []Option
+		envs    map[string]string
+		want    string
+	}{
+		{
+			name: "WithEndpointURL last",
+			options: []Option{
+				WithEndpoint("foo"),
+				WithEndpointURL("http://bar:8080/path"),
+			},
+			want: "bar:8080",
+		},
+		{
+			name: "WithEndpoint last",
+			options: []Option{
+				WithEndpointURL("http://bar:8080/path"),
+				WithEndpoint("foo"),
+			},
+			want: "foo",
+		},
+		{
+			name: "OTEL_EXPORTER_OTLP_ENDPOINT only",
+			envs: map[string]string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT": "foo2",
+			},
+			want: "foo2",
+		},
+		{
+			name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT only",
+			envs: map[string]string{
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "bar2",
+			},
+			want: "bar2",
+		},
+		{
+			name: "both OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+			envs: map[string]string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT":        "foo2",
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "bar2",
+			},
+			want: "bar2",
+		},
+		{
+			name: "both options and envs",
+			envs: map[string]string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT":        "foo2",
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "bar2",
+			},
+			options: []Option{
+				WithEndpointURL("http://bar:8080/path"),
+				WithEndpoint("foo"),
+			},
+			want: "foo",
+		},
+		{
+			name: "both options and envs",
+			envs: map[string]string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT":        "foo2",
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "bar2",
+			},
+			options: []Option{
+				WithEndpoint("foo"),
+				WithEndpointURL("http://bar:8080/path"),
+			},
+			want: "bar:8080",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for key, value := range tc.envs {
+				t.Setenv(key, value)
+			}
+
+			client := newClient(tc.options...)
+
+			assert.Equal(t, tc.want, client.endpoint)
+		})
+	}
 }

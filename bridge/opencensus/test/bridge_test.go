@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package test
 
@@ -33,7 +22,7 @@ func TestMixedAPIs(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	tracer := tp.Tracer("mixedapitracer")
-	octrace.DefaultTracer = ocbridge.NewTracer(tracer)
+	ocbridge.InstallTraceBridge(ocbridge.WithTracerProvider(tp))
 
 	func() {
 		ctx := context.Background()
@@ -77,7 +66,7 @@ func TestMixedAPIs(t *testing.T) {
 func TestStartOptions(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	octrace.DefaultTracer = ocbridge.NewTracer(tp.Tracer("startoptionstracer"))
+	ocbridge.InstallTraceBridge(ocbridge.WithTracerProvider(tp))
 
 	ctx := context.Background()
 	_, span := octrace.StartSpan(ctx, "OpenCensusSpan", octrace.WithSpanKind(octrace.SpanKindClient))
@@ -97,8 +86,8 @@ func TestStartOptions(t *testing.T) {
 func TestStartSpanWithRemoteParent(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	ocbridge.InstallTraceBridge(ocbridge.WithTracerProvider(tp))
 	tracer := tp.Tracer("remoteparent")
-	octrace.DefaultTracer = ocbridge.NewTracer(tracer)
 
 	ctx := context.Background()
 	ctx, parent := tracer.Start(ctx, "OpenTelemetrySpan1")
@@ -120,8 +109,8 @@ func TestStartSpanWithRemoteParent(t *testing.T) {
 func TestToFromContext(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	ocbridge.InstallTraceBridge(ocbridge.WithTracerProvider(tp))
 	tracer := tp.Tracer("tofromcontext")
-	octrace.DefaultTracer = ocbridge.NewTracer(tracer)
 
 	func() {
 		ctx := context.Background()
@@ -159,7 +148,7 @@ func TestToFromContext(t *testing.T) {
 func TestIsRecordingEvents(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	octrace.DefaultTracer = ocbridge.NewTracer(tp.Tracer("isrecordingevents"))
+	ocbridge.InstallTraceBridge(ocbridge.WithTracerProvider(tp))
 
 	ctx := context.Background()
 	_, ocspan := octrace.StartSpan(ctx, "OpenCensusSpan1")
@@ -179,7 +168,7 @@ func attrsMap(s []attribute.KeyValue) map[attribute.Key]attribute.Value {
 func TestSetThings(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	octrace.DefaultTracer = ocbridge.NewTracer(tp.Tracer("setthings"))
+	ocbridge.InstallTraceBridge(ocbridge.WithTracerProvider(tp))
 
 	ctx := context.Background()
 	_, ocspan := octrace.StartSpan(ctx, "OpenCensusSpan1")

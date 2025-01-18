@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package internal_test
 
@@ -24,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/bridge/opencensus/internal/oc2otel"
 	"go.opentelemetry.io/otel/bridge/opencensus/internal/otel2oc"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type handler struct{ err error }
@@ -38,6 +29,8 @@ func withHandler() (*handler, func()) {
 }
 
 type tracer struct {
+	embedded.Tracer
+
 	ctx  context.Context
 	name string
 	opts []trace.SpanStartOption
@@ -45,8 +38,8 @@ type tracer struct {
 
 func (t *tracer) Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	t.ctx, t.name, t.opts = ctx, name, opts
-	noop := trace.NewNoopTracerProvider().Tracer("testing")
-	return noop.Start(ctx, name, opts...)
+	sub := noop.NewTracerProvider().Tracer("testing")
+	return sub.Start(ctx, name, opts...)
 }
 
 type ctxKey string
@@ -110,12 +103,12 @@ func TestTracerFromContext(t *testing.T) {
 	})
 	ctx := trace.ContextWithSpanContext(context.Background(), sc)
 
-	noop := trace.NewNoopTracerProvider().Tracer("TestTracerFromContext")
+	tracer := noop.NewTracerProvider().Tracer("TestTracerFromContext")
 	// Test using the fact that the No-Op span will propagate a span context .
-	ctx, _ = noop.Start(ctx, "test")
+	ctx, _ = tracer.Start(ctx, "test")
 
-	got := internal.NewTracer(noop).FromContext(ctx).SpanContext()
-	// Do not test the convedsion, only that the propagtion.
+	got := internal.NewTracer(tracer).FromContext(ctx).SpanContext()
+	// Do not test the conversion, only the propagation.
 	want := otel2oc.SpanContext(sc)
 	if got != want {
 		t.Errorf("tracer.FromContext returned wrong context: %#v", got)
@@ -129,11 +122,11 @@ func TestTracerNewContext(t *testing.T) {
 	})
 	ctx := trace.ContextWithSpanContext(context.Background(), sc)
 
-	noop := trace.NewNoopTracerProvider().Tracer("TestTracerNewContext")
+	tracer := noop.NewTracerProvider().Tracer("TestTracerNewContext")
 	// Test using the fact that the No-Op span will propagate a span context .
-	_, s := noop.Start(ctx, "test")
+	_, s := tracer.Start(ctx, "test")
 
-	ocTracer := internal.NewTracer(noop)
+	ocTracer := internal.NewTracer(tracer)
 	ctx = ocTracer.NewContext(context.Background(), internal.NewSpan(s))
 	got := trace.SpanContextFromContext(ctx)
 

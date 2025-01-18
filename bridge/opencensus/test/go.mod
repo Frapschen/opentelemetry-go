@@ -1,22 +1,24 @@
 module go.opentelemetry.io/otel/bridge/opencensus/test
 
-go 1.19
+go 1.22.0
 
 require (
 	go.opencensus.io v0.24.0
-	go.opentelemetry.io/otel v1.15.0-rc.2
-	go.opentelemetry.io/otel/bridge/opencensus v0.38.0-rc.2
-	go.opentelemetry.io/otel/sdk v1.15.0-rc.2
-	go.opentelemetry.io/otel/trace v1.15.0-rc.2
+	go.opentelemetry.io/otel v1.34.0
+	go.opentelemetry.io/otel/bridge/opencensus v1.34.0
+	go.opentelemetry.io/otel/sdk v1.34.0
+	go.opentelemetry.io/otel/trace v1.34.0
 )
 
 require (
-	github.com/go-logr/logr v1.2.4 // indirect
+	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
-	go.opentelemetry.io/otel/metric v1.15.0-rc.2 // indirect
-	go.opentelemetry.io/otel/sdk/metric v0.38.0-rc.2 // indirect
-	golang.org/x/sys v0.7.0 // indirect
+	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
+	go.opentelemetry.io/otel/metric v1.34.0 // indirect
+	go.opentelemetry.io/otel/sdk/metric v1.34.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 )
 
 replace go.opentelemetry.io/otel => ../../..

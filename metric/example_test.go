@@ -1,36 +1,30 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package metric_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"math/rand"
+	"net/http"
 	"runtime"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/global"
-	"go.opentelemetry.io/otel/metric/instrument"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
+
+var meter = otel.Meter("my-service-meter")
 
 func ExampleMeter_synchronous() {
 	// Create a histogram using the global MeterProvider.
-	workDuration, err := global.Meter("go.opentelemetry.io/otel/metric#SyncExample").Int64Histogram(
+	workDuration, err := meter.Int64Histogram(
 		"workDuration",
-		instrument.WithUnit("ms"))
+		metric.WithUnit("ms"))
 	if err != nil {
 		fmt.Println("Failed to register instrument")
 		panic(err)
@@ -44,12 +38,10 @@ func ExampleMeter_synchronous() {
 }
 
 func ExampleMeter_asynchronous_single() {
-	meter := global.Meter("go.opentelemetry.io/otel/metric#AsyncExample")
-
 	_, err := meter.Int64ObservableGauge(
 		"DiskUsage",
-		instrument.WithUnit("By"),
-		instrument.WithInt64Callback(func(_ context.Context, obsrv instrument.Int64Observer) error {
+		metric.WithUnit("By"),
+		metric.WithInt64Callback(func(_ context.Context, obsrv metric.Int64Observer) error {
 			// Do the real work here to get the real disk usage. For example,
 			//
 			//   usage, err := GetDiskUsage(diskID)
@@ -63,7 +55,7 @@ func ExampleMeter_asynchronous_single() {
 			//
 			// For demonstration purpose, a static value is used here.
 			usage := 75000
-			obsrv.Observe(int64(usage), instrument.WithAttributes(attribute.Int("disk.id", 3)))
+			obsrv.Observe(int64(usage), metric.WithAttributes(attribute.Int("disk.id", 3)))
 			return nil
 		}),
 	)
@@ -74,13 +66,19 @@ func ExampleMeter_asynchronous_single() {
 }
 
 func ExampleMeter_asynchronous_multiple() {
-	meter := global.Meter("go.opentelemetry.io/otel/metric#MultiAsyncExample")
-
 	// This is just a sample of memory stats to record from the Memstats
-	heapAlloc, _ := meter.Int64ObservableUpDownCounter("heapAllocs")
-	gcCount, _ := meter.Int64ObservableCounter("gcCount")
+	heapAlloc, err := meter.Int64ObservableUpDownCounter("heapAllocs")
+	if err != nil {
+		fmt.Println("failed to register updown counter for heapAllocs")
+		panic(err)
+	}
+	gcCount, err := meter.Int64ObservableCounter("gcCount")
+	if err != nil {
+		fmt.Println("failed to register counter for gcCount")
+		panic(err)
+	}
 
-	_, err := meter.RegisterCallback(
+	_, err = meter.RegisterCallback(
 		func(_ context.Context, o metric.Observer) error {
 			memStats := &runtime.MemStats{}
 			// This call does work
@@ -98,4 +96,216 @@ func ExampleMeter_asynchronous_multiple() {
 		fmt.Println("Failed to register callback")
 		panic(err)
 	}
+}
+
+// Counters can be used to measure a non-negative, increasing value.
+//
+// Here's how you might report the number of calls for an HTTP handler.
+func ExampleMeter_counter() {
+	apiCounter, err := meter.Int64Counter(
+		"api.counter",
+		metric.WithDescription("Number of API calls."),
+		metric.WithUnit("{call}"),
+	)
+	if err != nil {
+		panic(err)
+	}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		apiCounter.Add(r.Context(), 1)
+
+		// do some work in an API call
+	})
+}
+
+// UpDown counters can increment and decrement, allowing you to observe
+// a cumulative value that goes up or down.
+//
+// Here's how you might report the number of items of some collection.
+func ExampleMeter_upDownCounter() {
+	var err error
+	itemsCounter, err := meter.Int64UpDownCounter(
+		"items.counter",
+		metric.WithDescription("Number of items."),
+		metric.WithUnit("{item}"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	_ = func() {
+		// code that adds an item to the collection
+		itemsCounter.Add(context.Background(), 1)
+	}
+
+	_ = func() {
+		// code that removes an item from the collection
+		itemsCounter.Add(context.Background(), -1)
+	}
+}
+
+// Gauges can be used to record non-additive values when changes occur.
+//
+// Here's how you might report the current speed of a cpu fan.
+func ExampleMeter_gauge() {
+	speedGauge, err := meter.Int64Gauge(
+		"cpu.fan.speed",
+		metric.WithDescription("Speed of CPU fan"),
+		metric.WithUnit("RPM"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	getCPUFanSpeed := func() int64 {
+		// Generates a random fan speed for demonstration purpose.
+		// In real world applications, replace this to get the actual fan speed.
+		return int64(1500 + rand.Intn(1000))
+	}
+
+	fanSpeedSubscription := make(chan int64, 1)
+	go func() {
+		defer close(fanSpeedSubscription)
+
+		for idx := 0; idx < 5; idx++ {
+			// Synchronous gauges are used when the measurement cycle is
+			// synchronous to an external change.
+			// Simulate that external cycle here.
+			time.Sleep(time.Duration(rand.Intn(3)) * time.Second)
+			fanSpeed := getCPUFanSpeed()
+			fanSpeedSubscription <- fanSpeed
+		}
+	}()
+
+	ctx := context.Background()
+	for fanSpeed := range fanSpeedSubscription {
+		speedGauge.Record(ctx, fanSpeed)
+	}
+}
+
+// Histograms are used to measure a distribution of values over time.
+//
+// Here's how you might report a distribution of response times for an HTTP handler.
+func ExampleMeter_histogram() {
+	histogram, err := meter.Float64Histogram(
+		"task.duration",
+		metric.WithDescription("The duration of task execution."),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(.005, .01, .025, .05, .075, .1, .25, .5, .75, 1, 2.5, 5, 7.5, 10),
+	)
+	if err != nil {
+		panic(err)
+	}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// do some work in an API call
+
+		duration := time.Since(start)
+		histogram.Record(r.Context(), duration.Seconds())
+	})
+}
+
+// Observable counters can be used to measure an additive, non-negative,
+// monotonically increasing value.
+//
+// Here's how you might report time since the application started.
+func ExampleMeter_observableCounter() {
+	start := time.Now()
+	if _, err := meter.Float64ObservableCounter(
+		"uptime",
+		metric.WithDescription("The duration since the application started."),
+		metric.WithUnit("s"),
+		metric.WithFloat64Callback(func(_ context.Context, o metric.Float64Observer) error {
+			o.Observe(float64(time.Since(start).Seconds()))
+			return nil
+		}),
+	); err != nil {
+		panic(err)
+	}
+}
+
+// Observable UpDown counters can increment and decrement, allowing you to measure
+// an additive, non-negative, non-monotonically increasing cumulative value.
+//
+// Here's how you might report some database metrics.
+func ExampleMeter_observableUpDownCounter() {
+	// The function registers asynchronous metrics for the provided db.
+	// Make sure to unregister metric.Registration before closing the provided db.
+	_ = func(db *sql.DB, meter metric.Meter, poolName string) (metric.Registration, error) {
+		m, err := meter.Int64ObservableUpDownCounter(
+			"db.client.connections.max",
+			metric.WithDescription("The maximum number of open connections allowed."),
+			metric.WithUnit("{connection}"),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		waitTime, err := meter.Int64ObservableUpDownCounter(
+			"db.client.connections.wait_time",
+			metric.WithDescription("The time it took to obtain an open connection from the pool."),
+			metric.WithUnit("ms"),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		reg, err := meter.RegisterCallback(
+			func(_ context.Context, o metric.Observer) error {
+				stats := db.Stats()
+				o.ObserveInt64(m, int64(stats.MaxOpenConnections))
+				o.ObserveInt64(waitTime, int64(stats.WaitDuration))
+				return nil
+			},
+			m,
+			waitTime,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return reg, nil
+	}
+}
+
+// Observable Gauges should be used to measure non-additive values.
+//
+// Here's how you might report memory usage of the heap objects used
+// in application.
+func ExampleMeter_observableGauge() {
+	if _, err := meter.Int64ObservableGauge(
+		"memory.heap",
+		metric.WithDescription(
+			"Memory usage of the allocated heap objects.",
+		),
+		metric.WithUnit("By"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			o.Observe(int64(m.HeapAlloc))
+			return nil
+		}),
+	); err != nil {
+		panic(err)
+	}
+}
+
+// You can add Attributes by using the [WithAttributeSet] and [WithAttributes] options.
+//
+// Here's how you might add the HTTP status code attribute to your recordings.
+func ExampleMeter_attributes() {
+	apiCounter, err := meter.Int64UpDownCounter(
+		"api.finished.counter",
+		metric.WithDescription("Number of finished API calls."),
+		metric.WithUnit("{call}"),
+	)
+	if err != nil {
+		panic(err)
+	}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// do some work in an API call and set the response HTTP status code
+		statusCode := http.StatusOK
+
+		apiCounter.Add(r.Context(), 1,
+			metric.WithAttributes(semconv.HTTPResponseStatusCode(statusCode)))
+	})
 }

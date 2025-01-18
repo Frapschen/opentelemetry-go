@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package internal // import "go.opentelemetry.io/otel/schema/internal"
 
@@ -36,8 +25,15 @@ func CheckFileFormatField(fileFormat string, supportedFormatMajor, supportedForm
 		)
 	}
 
+	if supportedFormatMajor < 0 {
+		return errors.New("major version should be positive")
+	}
+	if supportedFormatMinor < 0 {
+		return errors.New("major version should be positive")
+	}
+
 	// Check that the major version number in the file is the same as what we expect.
-	if fileFormatParsed.Major() != uint64(supportedFormatMajor) {
+	if fileFormatParsed.Major() != uint64(supportedFormatMajor) { // nolint:gosec // Version can't be negative (overflow checked).
 		return fmt.Errorf(
 			"this library cannot parse file formats with major version other than %v",
 			supportedFormatMajor,
@@ -46,7 +42,7 @@ func CheckFileFormatField(fileFormat string, supportedFormatMajor, supportedForm
 
 	// Check that the file minor version number is not greater than
 	// what is requested supports.
-	if fileFormatParsed.Minor() > uint64(supportedFormatMinor) {
+	if fileFormatParsed.Minor() > uint64(supportedFormatMinor) { // nolint:gosec // Version can't be negative (overflow checked).
 		supportedFormatMajorMinor := strconv.Itoa(supportedFormatMajor) + "." +
 			strconv.Itoa(supportedFormatMinor) // 1.0
 

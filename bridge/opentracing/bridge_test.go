@@ -1,22 +1,10 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package opentracing
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -35,8 +23,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type testOnlyTextMapReader struct {
-}
+type testOnlyTextMapReader struct{}
 
 func newTestOnlyTextMapReader() *testOnlyTextMapReader {
 	return &testOnlyTextMapReader{}
@@ -78,7 +65,7 @@ func TestTextMapWrapper_New(t *testing.T) {
 	assert.NoError(t, err)
 
 	_, err = newTextMapWrapperForExtract(newTestOnlyTextMapWriter())
-	assert.True(t, errors.Is(err, ot.ErrInvalidCarrier))
+	assert.ErrorIs(t, err, ot.ErrInvalidCarrier)
 
 	_, err = newTextMapWrapperForExtract(newTestTextMapReaderAndWriter())
 	assert.NoError(t, err)
@@ -87,7 +74,7 @@ func TestTextMapWrapper_New(t *testing.T) {
 	assert.NoError(t, err)
 
 	_, err = newTextMapWrapperForInject(newTestOnlyTextMapReader())
-	assert.True(t, errors.Is(err, ot.ErrInvalidCarrier))
+	assert.ErrorIs(t, err, ot.ErrInvalidCarrier)
 
 	_, err = newTextMapWrapperForInject(newTestTextMapReaderAndWriter())
 	assert.NoError(t, err)
@@ -99,8 +86,8 @@ func TestTextMapWrapper_action(t *testing.T) {
 		assert.Len(t, str, 2)
 		assert.Contains(t, str, "key1", "key2")
 
-		assert.Equal(t, carrier.Get("key1"), "val1")
-		assert.Equal(t, carrier.Get("key2"), "val2")
+		assert.Equal(t, "val1", carrier.Get("key1"))
+		assert.Equal(t, "val2", carrier.Get("key2"))
 	}
 
 	testInjectFunc := func(carrier propagation.TextMapCarrier) {
@@ -144,8 +131,7 @@ var (
 	spanID     trace.SpanID  = [8]byte{byte(11)}
 )
 
-type testTextMapPropagator struct {
-}
+type testTextMapPropagator struct{}
 
 func (t testTextMapPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
 	carrier.Set(testHeader, strings.Join([]string{traceID.String(), spanID.String()}, ":"))
@@ -163,7 +149,7 @@ func (t testTextMapPropagator) Extract(ctx context.Context, carrier propagation.
 		return ctx
 	}
 
-	var exist = false
+	exist := false
 
 	for _, key := range carrier.Keys() {
 		if strings.EqualFold(testHeader, key) {
@@ -366,12 +352,12 @@ func TestBridgeTracer_ExtractAndInject(t *testing.T) {
 					bsc, ok := spanContext.(*bridgeSpanContext)
 					assert.True(t, ok)
 					require.NotNil(t, bsc)
-					require.NotNil(t, bsc.otelSpanContext)
-					require.NotNil(t, bsc.otelSpanContext.SpanID())
-					require.NotNil(t, bsc.otelSpanContext.TraceID())
+					require.NotNil(t, bsc.SpanContext)
+					require.NotNil(t, bsc.SpanID())
+					require.NotNil(t, bsc.TraceID())
 
-					assert.Equal(t, spanID.String(), bsc.otelSpanContext.SpanID().String())
-					assert.Equal(t, traceID.String(), bsc.otelSpanContext.TraceID().String())
+					assert.Equal(t, spanID.String(), bsc.SpanID().String())
+					assert.Equal(t, traceID.String(), bsc.TraceID().String())
 				}
 			}
 		})
@@ -409,7 +395,7 @@ func TestBridgeTracer_StartSpan(t *testing.T) {
 			expectWarnings: []string(nil),
 		},
 		{
-			name: "with a non-defered wrapper tracer",
+			name: "with a non-deferred wrapper tracer",
 			before: func(t *testing.T, bridge *BridgeTracer) {
 				wTracer := &nonDeferWrapperTracer{
 					NewWrapperTracer(bridge, otel.Tracer("test")),
@@ -510,7 +496,7 @@ func Test_otTagsToOTelAttributesKindAndError(t *testing.T) {
 			b, _ := NewTracerPair(tracer)
 
 			s := b.StartSpan(tc.name, tc.opt...)
-			assert.Equal(t, s.(*bridgeSpan).otelSpan.(*internal.MockSpan).SpanKind, tc.expected)
+			assert.Equal(t, tc.expected, s.(*bridgeSpan).otelSpan.(*internal.MockSpan).SpanKind)
 		})
 	}
 }
@@ -544,5 +530,133 @@ func TestBridge_SpanContext_IsSampled(t *testing.T) {
 
 			assert.Equal(t, tc.expected, sc.(samplable).IsSampled())
 		})
+	}
+}
+
+func TestBridgeSpanContextPromotedMethods(t *testing.T) {
+	bridge := NewBridgeTracer()
+	bridge.SetTextMapPropagator(new(testTextMapPropagator))
+
+	tmc := newTextCarrier()
+
+	type spanContextProvider interface {
+		HasTraceID() bool
+		TraceID() trace.TraceID
+		HasSpanID() bool
+		SpanID() trace.SpanID
+	}
+
+	err := bridge.Inject(newBridgeSpanContext(trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: [16]byte{byte(1)},
+		SpanID:  [8]byte{byte(2)},
+	}), nil), ot.TextMap, tmc)
+	assert.NoError(t, err)
+
+	spanContext, err := bridge.Extract(ot.TextMap, tmc)
+	assert.NoError(t, err)
+
+	assert.NotPanics(t, func() {
+		assert.Equal(t, spanID.String(), spanContext.(spanContextProvider).SpanID().String())
+		assert.Equal(t, traceID.String(), spanContext.(spanContextProvider).TraceID().String())
+		assert.True(t, spanContext.(spanContextProvider).HasSpanID())
+		assert.True(t, spanContext.(spanContextProvider).HasTraceID())
+	})
+}
+
+func TestBridgeCarrierBaggagePropagation(t *testing.T) {
+	carriers := []struct {
+		name    string
+		factory func() interface{}
+		format  ot.BuiltinFormat
+	}{
+		{
+			name:    "TextMapCarrier",
+			factory: func() interface{} { return ot.TextMapCarrier{} },
+			format:  ot.TextMap,
+		},
+		{
+			name:    "HTTPHeadersCarrier",
+			factory: func() interface{} { return ot.HTTPHeadersCarrier{} },
+			format:  ot.HTTPHeaders,
+		},
+	}
+
+	testCases := []struct {
+		name         string
+		baggageItems []bipBaggage
+	}{
+		{
+			name: "single baggage item",
+			baggageItems: []bipBaggage{
+				{
+					key:   "foo",
+					value: "bar",
+				},
+			},
+		},
+		{
+			name: "multiple baggage items",
+			baggageItems: []bipBaggage{
+				{
+					key:   "foo",
+					value: "bar",
+				},
+				{
+					key:   "foo2",
+					value: "bar2",
+				},
+			},
+		},
+		{
+			name: "with characters escaped by baggage propagator",
+			baggageItems: []bipBaggage{
+				{
+					key:   "space",
+					value: "Hello world!",
+				},
+				{
+					key:   "utf8",
+					value: "Świat",
+				},
+			},
+		},
+	}
+
+	for _, c := range carriers {
+		for _, tc := range testCases {
+			t.Run(fmt.Sprintf("%s %s", c.name, tc.name), func(t *testing.T) {
+				mockOtelTracer := internal.NewMockTracer()
+				b, _ := NewTracerPair(mockOtelTracer)
+				b.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+					propagation.TraceContext{},
+					propagation.Baggage{}), // Required for baggage propagation.
+				)
+
+				// Set baggage items.
+				span := b.StartSpan("test")
+				for _, bi := range tc.baggageItems {
+					span.SetBaggageItem(bi.key, bi.value)
+				}
+				defer span.Finish()
+
+				carrier := c.factory()
+				err := b.Inject(span.Context(), c.format, carrier)
+				assert.NoError(t, err)
+
+				spanContext, err := b.Extract(c.format, carrier)
+				assert.NoError(t, err)
+
+				// Check baggage items.
+				bsc, ok := spanContext.(*bridgeSpanContext)
+				assert.True(t, ok)
+
+				var got []bipBaggage
+				for _, m := range bsc.bag.Members() {
+					got = append(got, bipBaggage{m.Key(), m.Value()})
+				}
+
+				assert.ElementsMatch(t, tc.baggageItems, got)
+			})
+		}
 	}
 }

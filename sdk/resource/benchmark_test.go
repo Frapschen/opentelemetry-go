@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package resource_test
 
@@ -63,21 +52,27 @@ func benchmarkMergeResource(b *testing.B, size int) {
 func BenchmarkMergeResource_1(b *testing.B) {
 	benchmarkMergeResource(b, 1)
 }
+
 func BenchmarkMergeResource_2(b *testing.B) {
 	benchmarkMergeResource(b, 2)
 }
+
 func BenchmarkMergeResource_3(b *testing.B) {
 	benchmarkMergeResource(b, 3)
 }
+
 func BenchmarkMergeResource_4(b *testing.B) {
 	benchmarkMergeResource(b, 4)
 }
+
 func BenchmarkMergeResource_6(b *testing.B) {
 	benchmarkMergeResource(b, 6)
 }
+
 func BenchmarkMergeResource_8(b *testing.B) {
 	benchmarkMergeResource(b, 8)
 }
+
 func BenchmarkMergeResource_16(b *testing.B) {
 	benchmarkMergeResource(b, 16)
 }

@@ -1,20 +1,10 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package zipkin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,12 +12,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	ottest "go.opentelemetry.io/otel/internal/internaltest"
+	ottest "go.opentelemetry.io/otel/exporters/zipkin/internal/internaltest"
 
+	"github.com/go-logr/logr/funcr"
 	zkmodel "github.com/openzipkin/zipkin-go/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,7 +28,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -118,7 +110,9 @@ func startMockZipkinCollector(t *testing.T) *mockZipkinCollector {
 	require.NoError(t, err)
 	collector.url = fmt.Sprintf("http://%s", listener.Addr().String())
 	server := &http.Server{
-		Handler: http.HandlerFunc(collector.handler),
+		Handler:      http.HandlerFunc(collector.handler),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 	collector.server = server
 	wg := &sync.WaitGroup{}
@@ -315,7 +309,7 @@ func TestExportSpans(t *testing.T) {
 	exporter, err := New(collector.url, WithLogger(logger))
 	require.NoError(t, err)
 	ctx := context.Background()
-	require.Len(t, ls.Messages, 0)
+	require.Empty(t, ls.Messages)
 	require.NoError(t, exporter.ExportSpans(ctx, spans[0:1]))
 	require.Len(t, ls.Messages, 1)
 	require.Contains(t, ls.Messages[0], "send a POST request")
@@ -363,4 +357,67 @@ func TestErrorOnExportShutdownExporter(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, exp.Shutdown(context.Background()))
 	assert.NoError(t, exp.ExportSpans(context.Background(), nil))
+}
+
+func TestLogrFormatting(t *testing.T) {
+	format := "string %q, int %d"
+	args := []interface{}{"s", 1}
+
+	var buf bytes.Buffer
+	l := funcr.New(func(prefix, args string) {
+		_, _ = buf.WriteString(fmt.Sprint(prefix, args))
+	}, funcr.Options{})
+	exp, err := New("", WithLogr(l))
+	require.NoError(t, err)
+
+	exp.logf(format, args...)
+
+	want := "\"level\"=0 \"msg\"=\"string \\\"s\\\", int 1\""
+	got := buf.String()
+	assert.Equal(t, want, got)
+}
+
+func TestWithHeaders(t *testing.T) {
+	headers := map[string]string{
+		"name1": "value1",
+		"name2": "value2",
+		"host":  "example",
+	}
+
+	exp, err := New("", WithHeaders(headers))
+	require.NoError(t, err)
+
+	want := headers
+	got := exp.headers
+	assert.Equal(t, want, got)
+
+	spans := tracetest.SpanStubs{
+		{
+			SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID: trace.TraceID{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F},
+				SpanID:  trace.SpanID{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8},
+			}),
+		},
+	}.Snapshots()
+
+	var req *http.Request
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		req = r
+		w.WriteHeader(http.StatusOK)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	e := &Exporter{
+		url:     srv.URL,
+		client:  srv.Client(),
+		headers: headers,
+	}
+
+	_ = e.ExportSpans(context.Background(), spans)
+
+	assert.Equal(t, headers["host"], req.Host)
+	assert.Equal(t, headers["name1"], req.Header.Get("name1"))
+	assert.Equal(t, headers["name2"], req.Header.Get("name2"))
 }

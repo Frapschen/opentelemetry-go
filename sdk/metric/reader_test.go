@@ -1,18 +1,7 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
-package metric // import "go.opentelemetry.io/otel/sdk/metric/reader"
+package metric // import "go.opentelemetry.io/otel/sdk/metric"
 
 import (
 	"context"
@@ -34,16 +23,12 @@ import (
 type readerTestSuite struct {
 	suite.Suite
 
-	Factory func() Reader
+	Factory func(...ReaderOption) Reader
 	Reader  Reader
 }
 
 func (ts *readerTestSuite) SetupSuite() {
 	otel.SetLogger(testr.New(ts.T()))
-}
-
-func (ts *readerTestSuite) SetupTest() {
-	ts.Reader = ts.Factory()
 }
 
 func (ts *readerTestSuite) TearDownTest() {
@@ -52,11 +37,13 @@ func (ts *readerTestSuite) TearDownTest() {
 }
 
 func (ts *readerTestSuite) TestErrorForNotRegistered() {
+	ts.Reader = ts.Factory()
 	err := ts.Reader.Collect(context.Background(), &metricdata.ResourceMetrics{})
 	ts.ErrorIs(err, ErrReaderNotRegistered)
 }
 
 func (ts *readerTestSuite) TestSDKProducer() {
+	ts.Reader = ts.Factory()
 	ts.Reader.register(testSDKProducer{})
 	m := metricdata.ResourceMetrics{}
 	err := ts.Reader.Collect(context.Background(), &m)
@@ -65,8 +52,8 @@ func (ts *readerTestSuite) TestSDKProducer() {
 }
 
 func (ts *readerTestSuite) TestExternalProducer() {
+	ts.Reader = ts.Factory(WithProducer(testExternalProducer{}))
 	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(testExternalProducer{})
 	m := metricdata.ResourceMetrics{}
 	err := ts.Reader.Collect(context.Background(), &m)
 	ts.NoError(err)
@@ -74,9 +61,9 @@ func (ts *readerTestSuite) TestExternalProducer() {
 }
 
 func (ts *readerTestSuite) TestCollectAfterShutdown() {
+	ts.Reader = ts.Factory(WithProducer(testExternalProducer{}))
 	ctx := context.Background()
 	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(testExternalProducer{})
 	ts.Require().NoError(ts.Reader.Shutdown(ctx))
 
 	m := metricdata.ResourceMetrics{}
@@ -86,22 +73,15 @@ func (ts *readerTestSuite) TestCollectAfterShutdown() {
 }
 
 func (ts *readerTestSuite) TestShutdownTwice() {
+	ts.Reader = ts.Factory(WithProducer(testExternalProducer{}))
 	ctx := context.Background()
 	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(testExternalProducer{})
 	ts.Require().NoError(ts.Reader.Shutdown(ctx))
 	ts.ErrorIs(ts.Reader.Shutdown(ctx), ErrReaderShutdown)
 }
 
-func (ts *readerTestSuite) TestMultipleForceFlush() {
-	ctx := context.Background()
-	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(testExternalProducer{})
-	ts.Require().NoError(ts.Reader.ForceFlush(ctx))
-	ts.NoError(ts.Reader.ForceFlush(ctx))
-}
-
 func (ts *readerTestSuite) TestMultipleRegister() {
+	ts.Reader = ts.Factory()
 	p0 := testSDKProducer{
 		produceFunc: func(ctx context.Context, rm *metricdata.ResourceMetrics) error {
 			// Differentiate this producer from the second by returning an
@@ -121,35 +101,34 @@ func (ts *readerTestSuite) TestMultipleRegister() {
 }
 
 func (ts *readerTestSuite) TestExternalProducerPartialSuccess() {
-	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(
-		testExternalProducer{
+	ts.Reader = ts.Factory(
+		WithProducer(testExternalProducer{
 			produceFunc: func(ctx context.Context) ([]metricdata.ScopeMetrics, error) {
 				return []metricdata.ScopeMetrics{}, assert.AnError
 			},
-		},
-	)
-	ts.Reader.RegisterProducer(
-		testExternalProducer{
+		}),
+		WithProducer(testExternalProducer{
 			produceFunc: func(ctx context.Context) ([]metricdata.ScopeMetrics, error) {
 				return []metricdata.ScopeMetrics{testScopeMetricsB}, nil
 			},
-		},
+		}),
 	)
+	ts.Reader.register(testSDKProducer{})
 
 	m := metricdata.ResourceMetrics{}
 	err := ts.Reader.Collect(context.Background(), &m)
-	ts.Equal(assert.AnError, err)
+	ts.ErrorIs(err, assert.AnError)
 	ts.Equal(testResourceMetricsAB, m)
 }
 
 func (ts *readerTestSuite) TestSDKFailureBlocksExternalProducer() {
+	ts.Reader = ts.Factory(WithProducer(testExternalProducer{}))
 	ts.Reader.register(testSDKProducer{
 		produceFunc: func(ctx context.Context, rm *metricdata.ResourceMetrics) error {
 			*rm = metricdata.ResourceMetrics{}
 			return assert.AnError
-		}})
-	ts.Reader.RegisterProducer(testExternalProducer{})
+		},
+	})
 
 	m := metricdata.ResourceMetrics{}
 	err := ts.Reader.Collect(context.Background(), &m)
@@ -157,12 +136,12 @@ func (ts *readerTestSuite) TestSDKFailureBlocksExternalProducer() {
 	ts.Equal(metricdata.ResourceMetrics{}, m)
 }
 
-func (ts *readerTestSuite) TestMethodConcurrency() {
+func (ts *readerTestSuite) TestMethodConcurrentSafe() {
+	ts.Reader = ts.Factory(WithProducer(testExternalProducer{}))
 	// Requires the race-detector (a default test option for the project).
 
 	// All reader methods should be concurrent-safe.
 	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(testExternalProducer{})
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -171,14 +150,28 @@ func (ts *readerTestSuite) TestMethodConcurrency() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = ts.Reader.Collect(ctx, nil)
+			_ = ts.Reader.temporality(InstrumentKindCounter)
 		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = ts.Reader.ForceFlush(ctx)
+			_ = ts.Reader.aggregation(InstrumentKindCounter)
 		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = ts.Reader.Collect(ctx, &metricdata.ResourceMetrics{})
+		}()
+
+		if f, ok := ts.Reader.(interface{ ForceFlush(context.Context) error }); ok {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = f.ForceFlush(ctx)
+			}()
+		}
 
 		wg.Add(1)
 		go func() {
@@ -190,11 +183,11 @@ func (ts *readerTestSuite) TestMethodConcurrency() {
 }
 
 func (ts *readerTestSuite) TestShutdownBeforeRegister() {
+	ts.Reader = ts.Factory(WithProducer(testExternalProducer{}))
 	ctx := context.Background()
 	ts.Require().NoError(ts.Reader.Shutdown(ctx))
 	// Registering after shutdown should not revert the shutdown.
 	ts.Reader.register(testSDKProducer{})
-	ts.Reader.RegisterProducer(testExternalProducer{})
 
 	m := metricdata.ResourceMetrics{}
 	err := ts.Reader.Collect(ctx, &m)
@@ -203,8 +196,9 @@ func (ts *readerTestSuite) TestShutdownBeforeRegister() {
 }
 
 func (ts *readerTestSuite) TestCollectNilResourceMetricError() {
+	ts.Reader = ts.Factory()
 	ctx := context.Background()
-	ts.Assert().Error(ts.Reader.Collect(ctx, nil))
+	ts.Error(ts.Reader.Collect(ctx, nil))
 }
 
 var testScopeMetricsA = metricdata.ScopeMetrics{
@@ -306,13 +300,14 @@ func TestDefaultAggregationSelector(t *testing.T) {
 		InstrumentKindCounter,
 		InstrumentKindUpDownCounter,
 		InstrumentKindHistogram,
+		InstrumentKindGauge,
 		InstrumentKindObservableCounter,
 		InstrumentKindObservableUpDownCounter,
 		InstrumentKindObservableGauge,
 	}
 
 	for _, ik := range iKinds {
-		assert.NoError(t, DefaultAggregationSelector(ik).Err(), ik)
+		assert.NoError(t, DefaultAggregationSelector(ik).err(), ik)
 	}
 }
 
@@ -323,6 +318,7 @@ func TestDefaultTemporalitySelector(t *testing.T) {
 		InstrumentKindCounter,
 		InstrumentKindUpDownCounter,
 		InstrumentKindHistogram,
+		InstrumentKindGauge,
 		InstrumentKindObservableCounter,
 		InstrumentKindObservableUpDownCounter,
 		InstrumentKindObservableGauge,

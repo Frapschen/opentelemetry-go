@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package resource_test
 
@@ -21,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -28,10 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel/attribute"
-	ottest "go.opentelemetry.io/otel/internal/internaltest"
 	"go.opentelemetry.io/otel/sdk"
+	ottest "go.opentelemetry.io/otel/sdk/internal/internaltest"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 var (
@@ -182,7 +172,7 @@ func TestMerge(t *testing.T) {
 			name:  "Merge with different schemas",
 			a:     resource.NewWithAttributes("https://opentelemetry.io/schemas/1.4.0", kv41),
 			b:     resource.NewWithAttributes("https://opentelemetry.io/schemas/1.3.0", kv42),
-			want:  nil,
+			want:  []attribute.KeyValue{kv42},
 			isErr: true,
 		},
 	}
@@ -309,7 +299,7 @@ func TestMarshalJSON(t *testing.T) {
 	r := resource.NewSchemaless(attribute.Int64("A", 1), attribute.String("C", "D"))
 	data, err := json.Marshal(r)
 	require.NoError(t, err)
-	require.Equal(t,
+	require.JSONEq(t,
 		`[{"Key":"A","Value":{"Type":"INT64","Value":1}},{"Key":"C","Value":{"Type":"STRING","Value":"D"}}]`,
 		string(data))
 }
@@ -323,7 +313,7 @@ func TestNew(t *testing.T) {
 
 		resourceValues map[string]string
 		schemaURL      string
-		isErr          bool
+		wantErr        error
 	}{
 		{
 			name:           "No Options returns empty resource",
@@ -405,9 +395,14 @@ func TestNew(t *testing.T) {
 				),
 				resource.WithSchemaURL("https://opentelemetry.io/schemas/1.1.0"),
 			},
-			resourceValues: map[string]string{},
-			schemaURL:      "",
-			isErr:          true,
+			resourceValues: map[string]string{
+				string(semconv.HostNameKey): func() (hostname string) {
+					hostname, _ = os.Hostname()
+					return hostname
+				}(),
+			},
+			schemaURL: "",
+			wantErr:   resource.ErrSchemaURLConflict,
 		},
 		{
 			name:   "With conflicting detector schema urls",
@@ -419,9 +414,14 @@ func TestNew(t *testing.T) {
 				),
 				resource.WithSchemaURL("https://opentelemetry.io/schemas/1.2.0"),
 			},
-			resourceValues: map[string]string{},
-			schemaURL:      "",
-			isErr:          true,
+			resourceValues: map[string]string{
+				string(semconv.HostNameKey): func() (hostname string) {
+					hostname, _ = os.Hostname()
+					return hostname
+				}(),
+			},
+			schemaURL: "",
+			wantErr:   resource.ErrSchemaURLConflict,
 		},
 	}
 	for _, tt := range tc {
@@ -435,10 +435,10 @@ func TestNew(t *testing.T) {
 			ctx := context.Background()
 			res, err := resource.New(ctx, tt.options...)
 
-			if tt.isErr {
-				require.Error(t, err)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
 			} else {
-				require.NoError(t, err)
+				assert.NoError(t, err)
 			}
 
 			require.EqualValues(t, tt.resourceValues, toMap(res))
@@ -452,7 +452,7 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestNewWrapedError(t *testing.T) {
+func TestNewWrappedError(t *testing.T) {
 	localErr := errors.New("local error")
 	_, err := resource.New(
 		context.Background(),
@@ -601,8 +601,9 @@ func TestWithProcessCommandArgs(t *testing.T) {
 	)
 
 	require.NoError(t, err)
+	jsonCommandArgs, _ := json.Marshal(fakeCommandArgs)
 	require.EqualValues(t, map[string]string{
-		"process.command_args": fmt.Sprint(fakeCommandArgs),
+		"process.command_args": string(jsonCommandArgs),
 	}, toMap(res))
 }
 
@@ -671,11 +672,12 @@ func TestWithProcess(t *testing.T) {
 	)
 
 	require.NoError(t, err)
+	jsonCommandArgs, _ := json.Marshal(fakeCommandArgs)
 	require.EqualValues(t, map[string]string{
 		"process.pid":                 fmt.Sprint(fakePID),
 		"process.executable.name":     fakeExecutableName,
 		"process.executable.path":     fakeExecutablePath,
-		"process.command_args":        fmt.Sprint(fakeCommandArgs),
+		"process.command_args":        string(jsonCommandArgs),
 		"process.owner":               fakeOwner,
 		"process.runtime.name":        fakeRuntimeName,
 		"process.runtime.version":     fakeRuntimeVersion,
@@ -769,3 +771,29 @@ func TestWithContainer(t *testing.T) {
 		string(semconv.ContainerIDKey): fakeContainerID,
 	}, toMap(res))
 }
+
+func TestResourceConcurrentSafe(t *testing.T) {
+	// Creating Resources should also be free of any data races,
+	// because Resources are immutable.
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d := &fakeDetector{}
+			_, err := resource.Detect(context.Background(), d)
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+}
+
+type fakeDetector struct{}
+
+func (f fakeDetector) Detect(_ context.Context) (*resource.Resource, error) {
+	// A bit pedantic, but resource.NewWithAttributes returns an empty Resource when
+	// no attributes specified. We want to make sure that this is concurrent-safe.
+	return resource.NewWithAttributes("https://opentelemetry.io/schemas/1.3.0"), nil
+}
+
+var _ resource.Detector = &fakeDetector{}
